@@ -1,0 +1,13 @@
+---
+title: "hw1questions"
+---
+
+---
+
+---
+
+# \# MGTA495 Website
+
+Welcome to my course website.
+
+-   [HW1: A/B Testing a Call to Action](hw1_questions.html)
