@@ -3,11 +3,15 @@ project:
   output-dir: docs
 
 website:
-  title: "hw1questions"
+  title: "MGTA495 Website"
   navbar:
     left:
       - href: index.qmd
         text: Home
+      - href: hw1_questions.qmd
+        text: HW1
+      - href: hw2_questions.qmd
+        text: HW2
       - about.qmd
 
 format:

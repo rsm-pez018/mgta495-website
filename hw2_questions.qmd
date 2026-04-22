@@ -1,0 +1,208 @@
+---
+title: "Replication of Card and Krueger (1994)"
+subtitle: "Minimum Wages and Employment in New Jersey and Pennsylvania"
+author: "Peirong"
+date: today
+---
+
+## Introduction
+
+In this post, I replicate key results from Card and Krueger (1994), *Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania*.  
+On April 1, 1992, New Jersey increased its minimum wage from \$4.25 to \$5.05, while neighboring Pennsylvania did not. This setting allows a difference-in-differences (DiD) design: New Jersey stores are the treatment group, and Pennsylvania stores are the comparison group.
+
+The assignment for option 3 asks us to replicate:
+
+1. Some of Table 2.
+2. Table 3 (the 9 numbers in rows 1-3 and columns 1-3).
+3. Table 4, column (i).
+
+I follow the original data construction rules in the authors' `check.sas` file.
+
+## Main Analysis
+
+### Load Data and Recreate Variables
+
+```{r}
+library(dplyr)
+library(knitr)
+library(ggplot2)
+
+file_path <- "data/public.dat"
+
+col_names <- c(
+  "sheet", "chainr", "co_owned", "stater", "southj", "centralj", "northj", "pa1", "pa2", "shore",
+  "ncalls", "empft", "emppt", "nmgrs", "wage_st", "inctime", "firstinc", "bonus", "pctaff", "meal",
+  "open", "hrsopen", "psoda", "pfry", "pentree", "nregs", "nregs11",
+  "type2", "status2", "date2", "ncalls2", "empft2", "emppt2", "nmgrs2", "wage_st2", "inctime2",
+  "firstin2", "special2", "meals2", "open2r", "hrsopen2", "psoda2", "pfry2", "pentree2", "nregs2", "nregs112"
+)
+
+df <- read.table(file_path, header = FALSE, na.strings = ".", col.names = col_names)
+
+df <- df %>%
+  mutate(
+    emptot = emppt * 0.5 + empft + nmgrs,
+    emptot2 = emppt2 * 0.5 + empft2 + nmgrs2,
+    demp = emptot2 - emptot,
+    dwage = wage_st2 - wage_st,
+    gap = case_when(
+      stater == 0 ~ 0,
+      wage_st >= 5.05 ~ 0,
+      wage_st > 0 ~ (5.05 - wage_st) / wage_st,
+      TRUE ~ NA_real_
+    ),
+    nj = stater,
+    bk = as.integer(chainr == 1),
+    kfc = as.integer(chainr == 2),
+    roys = as.integer(chainr == 3),
+    wendys = as.integer(chainr == 4),
+    pmeal = psoda + pfry + pentree,
+    pmeal2 = psoda2 + pfry2 + pentree2,
+    fracft = empft / emptot,
+    fracft2 = ifelse(emptot2 > 0, empft2 / emptot2, NA_real_),
+    atmin = as.integer(wage_st == 4.25),
+    newmin = as.integer(wage_st2 == 5.05),
+    closed = as.integer(status2 == 3)
+  )
+
+nrow(df)
+```
+
+### Replicate Part of Table 2
+
+I replicate several key rows from Table 2: employment and starting wages in wave 1 and wave 2.
+
+```{r}
+table2_partial <- data.frame(
+  Variable = c(
+    "FTE employment (wave 1)",
+    "Starting wage (wave 1)",
+    "FTE employment (wave 2)",
+    "Starting wage (wave 2)",
+    "Wage = $5.05 in wave 2 (share)"
+  ),
+  PA = c(
+    mean(df$emptot[df$nj == 0], na.rm = TRUE),
+    mean(df$wage_st[df$nj == 0], na.rm = TRUE),
+    mean(df$emptot2[df$nj == 0], na.rm = TRUE),
+    mean(df$wage_st2[df$nj == 0], na.rm = TRUE),
+    mean(df$newmin[df$nj == 0], na.rm = TRUE)
+  ),
+  NJ = c(
+    mean(df$emptot[df$nj == 1], na.rm = TRUE),
+    mean(df$wage_st[df$nj == 1], na.rm = TRUE),
+    mean(df$emptot2[df$nj == 1], na.rm = TRUE),
+    mean(df$wage_st2[df$nj == 1], na.rm = TRUE),
+    mean(df$newmin[df$nj == 1], na.rm = TRUE)
+  )
+) %>%
+  mutate(`NJ - PA` = NJ - PA) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(table2_partial, caption = "Partial replication of Table 2")
+```
+
+These numbers closely match the paper: for example, wave-1 employment is about 20.4 in NJ and 23.3 in PA, and wave-2 starting wage is about 5.08 in NJ versus 4.62 in PA.
+
+### Replicate Table 3 (Rows 1-3, Columns 1-3)
+
+The assignment asks for the 9 cells from rows 1-3 and columns 1-3 of Table 3:
+
+1. FTE before.
+2. FTE after.
+3. Change.
+
+```{r}
+row1_pa <- mean(df$emptot[df$nj == 0], na.rm = TRUE)
+row1_nj <- mean(df$emptot[df$nj == 1], na.rm = TRUE)
+
+row2_pa <- mean(df$emptot2[df$nj == 0], na.rm = TRUE)
+row2_nj <- mean(df$emptot2[df$nj == 1], na.rm = TRUE)
+
+row3_pa <- row2_pa - row1_pa
+row3_nj <- row2_nj - row1_nj
+
+table3_9_numbers <- data.frame(
+  Row = c(
+    "1. FTE employment before",
+    "2. FTE employment after",
+    "3. Change in mean FTE employment"
+  ),
+  PA = c(row1_pa, row2_pa, row3_pa),
+  NJ = c(row1_nj, row2_nj, row3_nj)
+) %>%
+  mutate(`Difference (NJ - PA)` = NJ - PA) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(table3_9_numbers, caption = "Replication of Table 3 (rows 1-3, columns 1-3)")
+```
+
+The difference-in-differences in row 3 is about **2.754**, which is very close to the published value (about 2.76).
+
+### Replicate Table 4, Column (i)
+
+Following the authors' sample restriction in `check.sas`, estimate:
+
+\[
+\Delta Employment_i = \alpha + \beta \cdot NJ_i + \varepsilon_i
+\]
+
+```{r}
+table4_sample <- df %>%
+  filter(!is.na(demp), closed == 1 | (closed == 0 & !is.na(dwage)))
+
+model_col1 <- lm(demp ~ nj, data = table4_sample)
+coef_table <- summary(model_col1)$coefficients
+
+table4_col1 <- data.frame(
+  Term = rownames(coef_table),
+  Estimate = coef_table[, "Estimate"],
+  `Std. Error` = coef_table[, "Std. Error"],
+  `t value` = coef_table[, "t value"],
+  `Pr(>|t|)` = coef_table[, "Pr(>|t|)"]
+) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+kable(table4_col1, caption = "Replication of Table 4, column (i)")
+nrow(table4_sample)
+```
+
+The coefficient on `nj` is about **2.326** (SE **1.192**), closely matching the paper's column (i) estimate of roughly **2.33 (1.19)**.
+
+## Something Additional
+
+As an additional step, I plot the pre/post mean FTE employment in each state and annotate the DiD estimate.
+
+```{r}
+plot_df <- data.frame(
+  state = rep(c("Pennsylvania", "New Jersey"), each = 2),
+  period = rep(c("Before (Wave 1)", "After (Wave 2)"), times = 2),
+  mean_fte = c(row1_pa, row2_pa, row1_nj, row2_nj)
+)
+
+did_est <- (row2_nj - row1_nj) - (row2_pa - row1_pa)
+
+ggplot(plot_df, aes(x = period, y = mean_fte, color = state, group = state)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  labs(
+    title = "Difference-in-Differences Visualization",
+    subtitle = paste0("Estimated DiD effect = ", round(did_est, 3), " FTE workers"),
+    x = NULL,
+    y = "Average FTE Employment",
+    color = "State"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+The figure makes the result intuitive: Pennsylvania employment declines while New Jersey employment slightly rises, yielding a positive DiD estimate.
+
+## Conclusion
+
+This replication recovers the key findings requested in option 3:
+
+1. **Table 2 (partial):** means closely match the paper.
+2. **Table 3 (9 numbers):** replicated successfully, including a DiD of about **2.754**.
+3. **Table 4 column (i):** `NJ` coefficient about **2.326 (SE 1.192)**, very close to the published estimate.
+
+Overall, this supports the paper's main conclusion that the 1992 New Jersey minimum-wage increase did not reduce fast-food employment relative to Pennsylvania in this sample.

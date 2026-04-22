@@ -1,13 +1,10 @@
 ---
-title: "hw1questions"
+title: "MGTA495 Website"
 ---
 
----
-
----
-
-# \# MGTA495 Website
+# MGTA495 Website
 
 Welcome to my course website.
 
 -   [HW1: A/B Testing a Call to Action](hw1_questions.html)
+-   [HW2: Replication of Card and Krueger (1994)](hw2_questions.html)
