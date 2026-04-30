@@ -8,7 +8,7 @@ date: today
 ## Introduction
 
 In this post, I replicate key results from Card and Krueger (1994), *Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania*.  
-On April 1, 1992, New Jersey increased its minimum wage from \$4.25 to \$5.05, while neighboring Pennsylvania did not. This setting allows a difference-in-differences (DiD) design: New Jersey stores are the treatment group, and Pennsylvania stores are the comparison group.
+On April 1, 1992, New Jersey increased its minimum wage from \$4.25 to \$5.05, while neighboring Pennsylvania did not. This setting allows for a difference-in-differences (DiD) research design, where New Jersey stores serve as the treatment group and Pennsylvania stores serve as the comparison group. This approach helps isolate the causal effect of the minimum wage increase on employment outcomes.
 
 The assignment for option 3 asks us to replicate:
 
@@ -102,7 +102,7 @@ table2_partial <- data.frame(
 kable(table2_partial, caption = "Partial replication of Table 2")
 ```
 
-These numbers closely match the paper: for example, wave-1 employment is about 20.4 in NJ and 23.3 in PA, and wave-2 starting wage is about 5.08 in NJ versus 4.62 in PA.
+These results closely match those reported in the original paper. For example, wave-1 employment is approximately 20.4 in NJ and 23.3 in PA, while the wave-2 starting wage is about 5.08 in NJ versus 4.62 in PA.
 
 ### Replicate Table 3 (Rows 1-3, Columns 1-3)
 
@@ -205,4 +205,4 @@ This replication recovers the key findings requested in option 3:
 2. **Table 3 (9 numbers):** replicated successfully, including a DiD of about **2.754**.
 3. **Table 4 column (i):** `NJ` coefficient about **2.326 (SE 1.192)**, very close to the published estimate.
 
-Overall, this supports the paper's main conclusion that the 1992 New Jersey minimum-wage increase did not reduce fast-food employment relative to Pennsylvania in this sample.
+Overall, these findings support the paper's main conclusion that the 1992 New Jersey minimum wage increase did not reduce fast-food employment relative to Pennsylvania in this sample, providing evidence against the standard competitive labor market prediction.
