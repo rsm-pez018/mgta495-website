@@ -8,3 +8,4 @@ Welcome to my course website.
 
 -   [HW1: A/B Testing a Call to Action](hw1_questions.html)
 -   [HW2: Replication of Card and Krueger (1994)](hw2_questions.html)
+-   [HW3: Does Blueprinty Help Firms Win More Patents?](hw3_blueprinty.html)

@@ -12,6 +12,8 @@ website:
         text: HW1
       - href: hw2_questions.qmd
         text: HW2
+      - href: hw3_blueprinty.qmd
+        text: HW3
       - about.qmd
 
 format:

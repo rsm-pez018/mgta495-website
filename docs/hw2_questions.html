@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 <meta name="author" content="Peirong">
-<meta name="dcterms.date" content="2026-04-22">
+<meta name="dcterms.date" content="2026-05-17">
 
 <title>Replication of Card and Krueger (1994) – MGTA495 Website</title>
 <style>
@@ -142,6 +142,10 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span class="menu-text">HW2</span></a>
   </li>  
   <li class="nav-item">
+    <a class="nav-link" href="./hw3_blueprinty.html"> 
+<span class="menu-text">HW3</span></a>
+  </li>  
+  <li class="nav-item">
     <a class="nav-link" href="./about.html"> 
 <span class="menu-text">About</span></a>
   </li>  
@@ -197,7 +201,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">April 22, 2026</p>
+      <p class="date">May 17, 2026</p>
     </div>
   </div>
   
@@ -212,7 +216,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="introduction" class="level2">
 <h2 class="anchored" data-anchor-id="introduction">Introduction</h2>
 <p>In this post, I replicate key results from Card and Krueger (1994), <em>Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania</em>.<br>
-On April 1, 1992, New Jersey increased its minimum wage from $4.25 to $5.05, while neighboring Pennsylvania did not. This setting allows a difference-in-differences (DiD) design: New Jersey stores are the treatment group, and Pennsylvania stores are the comparison group.</p>
+On April 1, 1992, New Jersey increased its minimum wage from $4.25 to $5.05, while neighboring Pennsylvania did not. This setting allows for a difference-in-differences (DiD) research design, where New Jersey stores serve as the treatment group and Pennsylvania stores serve as the comparison group. This approach helps isolate the causal effect of the minimum wage increase on employment outcomes.</p>
 <p>The assignment for option 3 asks us to replicate:</p>
 <ol type="1">
 <li>Some of Table 2.</li>
@@ -365,7 +369,7 @@ Attaching package: 'dplyr'</code></pre>
 </table>
 </div>
 </div>
-<p>These numbers closely match the paper: for example, wave-1 employment is about 20.4 in NJ and 23.3 in PA, and wave-2 starting wage is about 5.08 in NJ versus 4.62 in PA.</p>
+<p>These results closely match those reported in the original paper. For example, wave-1 employment is approximately 20.4 in NJ and 23.3 in PA, while the wave-2 starting wage is about 5.08 in NJ versus 4.62 in PA.</p>
 </section>
 <section id="replicate-table-3-rows-1-3-columns-1-3" class="level3">
 <h3 class="anchored" data-anchor-id="replicate-table-3-rows-1-3-columns-1-3">Replicate Table 3 (Rows 1-3, Columns 1-3)</h3>
@@ -543,7 +547,7 @@ Attaching package: 'dplyr'</code></pre>
 <li><strong>Table 3 (9 numbers):</strong> replicated successfully, including a DiD of about <strong>2.754</strong>.</li>
 <li><strong>Table 4 column (i):</strong> <code>NJ</code> coefficient about <strong>2.326 (SE 1.192)</strong>, very close to the published estimate.</li>
 </ol>
-<p>Overall, this supports the paper’s main conclusion that the 1992 New Jersey minimum-wage increase did not reduce fast-food employment relative to Pennsylvania in this sample.</p>
+<p>Overall, these findings support the paper’s main conclusion that the 1992 New Jersey minimum wage increase did not reduce fast-food employment relative to Pennsylvania in this sample, providing evidence against the standard competitive labor market prediction.</p>
 
 
 </section>
