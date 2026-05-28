@@ -1,0 +1,652 @@
+---
+title: "MaxDiff Analysis of MSBA Class Preferences"
+subtitle: "Counts, MLE, and Bayesian estimation of the MNL model"
+author: "Peirong"
+date: today
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(gt)
+
+theme_set(theme_minimal(base_size = 12))
+
+item_colors <- c(
+  "#4E79A7", "#F28E2B", "#59A14F", "#E15759", "#76B7B2",
+  "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC"
+)
+```
+
+## Introduction
+
+MaxDiff, also called Best-Worst Scaling, is a survey method for measuring relative preferences. Instead of asking respondents to rate each item on a numeric scale, the survey repeatedly shows a small set of items and asks for the most preferred and least preferred option. In this assignment, each real MaxDiff task shows 4 MSBA core classes.
+
+MaxDiff is useful because people are usually better at making trade-offs than at calibrating a 1 to 10 rating scale. Two students might both say a class is an 8, but mean very different things. Asking them to choose the best and worst class from the same set forces clearer differentiation.
+
+Here I estimate class preferences using three approaches. First, I compute a simple counts score: percent picked best minus percent picked worst. Second, I fit a multinomial logit (MNL) model by maximum likelihood. Third, I fit the same MNL model with a Bayesian random-walk Metropolis sampler. I expect all three methods to agree most clearly on the top and bottom classes, with more disagreement among middle-ranked classes where preferences are closer together.
+
+## The Data
+
+```{r}
+#| label: read-data
+
+raw_choices <- read_csv("data/maxdiff_design_and_choices.csv", show_col_types = FALSE)
+labels_raw <- read_csv("data/maxdiff_item_labels.csv", show_col_types = FALSE)
+
+item_labels <- labels_raw[, 1:2]
+names(item_labels) <- c("Item", "label")
+item_labels <- item_labels |>
+  mutate(
+    short_label = c(
+      "AI Math/Prog",
+      "SQL",
+      "MFO",
+      "Large Data",
+      "Business Analytics",
+      "Consulting",
+      "Customer Analytics",
+      "Capstone",
+      "Marketing Analytics",
+      "BI Systems"
+    )
+  )
+
+names(item_colors) <- item_labels$short_label
+```
+
+The raw export includes a few follow-up rows with `Item = 11`, which is not one of the 10 labeled MSBA classes and does not appear in the item label file. Since the assignment is about the 10-course MaxDiff design, I keep only tasks that have exactly four rows and are made entirely of the 10 labeled class items.
+
+```{r}
+#| label: clean-maxdiff-data
+
+maxdiff <- raw_choices |>
+  group_by(`Record ID`, Task) |>
+  mutate(
+    task_rows = n(),
+    has_extra_item = any(Item > 10)
+  ) |>
+  ungroup() |>
+  filter(task_rows == 4, !has_extra_item, Item %in% item_labels$Item)
+
+task_summary <- maxdiff |>
+  group_by(`Record ID`, Task) |>
+  summarize(
+    rows = n(),
+    best = sum(Response == 1),
+    worst = sum(Response == -1),
+    neutral = sum(Response == 0),
+    .groups = "drop"
+  )
+
+descriptives <- tibble(
+  respondents = n_distinct(maxdiff$`Record ID`),
+  tasks_per_respondent = unique(maxdiff |>
+    distinct(`Record ID`, Task) |>
+    count(`Record ID`) |>
+    pull(n)),
+  items_per_task = unique(task_summary$rows),
+  total_labeled_items = nrow(item_labels),
+  total_choice_tasks = nrow(task_summary)
+)
+
+descriptives |>
+  gt() |>
+  tab_header(title = "MaxDiff Data Summary") |>
+  cols_label(
+    respondents = "Respondents",
+    tasks_per_respondent = "Tasks per respondent",
+    items_per_task = "Items per task",
+    total_labeled_items = "Class items",
+    total_choice_tasks = "Total MaxDiff tasks"
+  ) |>
+  fmt_number(columns = everything(), decimals = 0)
+```
+
+The cleaned data contain 85 respondents. Each respondent completed 8 four-item MaxDiff tasks, for a total of 680 choice tasks.
+
+```{r}
+#| label: sanity-check
+
+sanity_check <- task_summary |>
+  count(rows, best, worst, neutral)
+
+sanity_check |>
+  gt() |>
+  tab_header(title = "Sanity Check: One Best and One Worst per Task") |>
+  cols_label(
+    rows = "Rows",
+    best = "Best picks",
+    worst = "Worst picks",
+    neutral = "Neutral rows",
+    n = "Tasks"
+  ) |>
+  fmt_number(columns = everything(), decimals = 0)
+```
+
+Every retained task has exactly one best pick, one worst pick, and two neutral rows.
+
+```{r}
+#| label: exposure-counts
+
+exposure_counts <- maxdiff |>
+  count(Item, name = "shown") |>
+  left_join(item_labels, by = "Item") |>
+  arrange(Item)
+
+exposure_counts |>
+  select(Item, label, shown) |>
+  gt() |>
+  tab_header(title = "How Often Each Class Was Shown") |>
+  cols_label(Item = "Item", label = "Class", shown = "Times shown") |>
+  fmt_number(columns = shown, decimals = 0)
+```
+
+The design is reasonably balanced: each class appears between 266 and 276 times.
+
+## Counts Analysis
+
+The counts analysis is the simplest way to summarize the MaxDiff data. For each class, I calculate the percentage of times it was chosen as best and subtract the percentage of times it was chosen as worst:
+
+$$
+\text{score}_j = \%\text{best}_j - \%\text{worst}_j.
+$$
+
+A positive score means the class is more often selected as best than worst. A negative score means the opposite.
+
+```{r}
+#| label: counts-analysis
+
+counts <- maxdiff |>
+  group_by(Item) |>
+  summarize(
+    shown = n(),
+    best = sum(Response == 1),
+    worst = sum(Response == -1),
+    pct_best = best / shown,
+    pct_worst = worst / shown,
+    score = pct_best - pct_worst,
+    .groups = "drop"
+  ) |>
+  left_join(item_labels, by = "Item") |>
+  arrange(desc(score)) |>
+  mutate(counts_rank = row_number())
+
+counts |>
+  select(Item, label, shown, best, worst, pct_best, pct_worst, score) |>
+  gt() |>
+  tab_header(title = "Counts Analysis Ranked by Best-Worst Score") |>
+  cols_label(
+    Item = "Item",
+    label = "Class",
+    shown = "Shown",
+    best = "Best",
+    worst = "Worst",
+    pct_best = "% best",
+    pct_worst = "% worst",
+    score = "Score"
+  ) |>
+  fmt_number(columns = c(shown, best, worst), decimals = 0) |>
+  fmt_percent(columns = c(pct_best, pct_worst), decimals = 1) |>
+  fmt_number(columns = score, decimals = 3)
+```
+
+```{r}
+#| label: bootstrap-counts
+
+score_from_data <- function(dat) {
+  dat |>
+    group_by(Item) |>
+    summarize(
+      shown = n(),
+      best = sum(Response == 1),
+      worst = sum(Response == -1),
+      score = best / shown - worst / shown,
+      .groups = "drop"
+    )
+}
+
+set.seed(495)
+B <- 1000
+respondent_ids <- unique(maxdiff$`Record ID`)
+boot_scores <- vector("list", B)
+
+for (b in seq_len(B)) {
+  sampled_ids <- sample(respondent_ids, length(respondent_ids), replace = TRUE)
+  boot_dat <- bind_rows(lapply(sampled_ids, function(id) {
+    maxdiff[maxdiff$`Record ID` == id, ]
+  }))
+
+  boot_scores[[b]] <- score_from_data(boot_dat) |>
+    select(Item, score) |>
+    mutate(iteration = b)
+}
+
+counts_ci <- bind_rows(boot_scores) |>
+  group_by(Item) |>
+  summarize(
+    score_lo = quantile(score, 0.025),
+    score_hi = quantile(score, 0.975),
+    .groups = "drop"
+  )
+
+counts <- counts |>
+  left_join(counts_ci, by = "Item")
+```
+
+```{r}
+#| label: counts-plot
+#| fig-width: 8
+#| fig-height: 5
+
+ggplot(counts, aes(x = reorder(short_label, score), y = score, fill = short_label)) +
+  geom_col(width = 0.72) +
+  geom_errorbar(aes(ymin = score_lo, ymax = score_hi), width = 0.2, color = "#333333") +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = item_colors, guide = "none") +
+  labs(
+    title = "Counts Score by Class",
+    subtitle = "Bars show % best minus % worst; lines show respondent-bootstrap 95% intervals",
+    x = NULL,
+    y = "Best-worst score"
+  )
+```
+
+Marketing Analytics is the clear leader in the counts analysis. It was picked best more than half the times it was shown and almost never picked worst. Business Analytics, Customer Analytics, and Large Data form the next positive tier. Analytics Consulting, Marketing/Finance/Operations, and AI Math/Programming/Analytics are at the bottom because they were selected as worst much more often than best.
+
+## From MaxDiff Data to MNL Choices
+
+For the MNL model, each task is treated as two linked choice observations. First, the respondent chooses the best class from the four shown items. If the shown set is $\{a, b, c, d\}$, the probability that class $b$ is selected as best is
+
+$$
+P(\text{best} = b) =
+\frac{\exp(\beta_b)}
+{\exp(\beta_a) + \exp(\beta_b) + \exp(\beta_c) + \exp(\beta_d)}.
+$$
+
+Then the respondent chooses the worst class from the remaining three. For the worst choice, the utilities are flipped, so lower-utility classes become more likely to be selected:
+
+$$
+P(\text{worst} = c \mid \text{best} = b) =
+\frac{\exp(-\beta_c)}
+{\exp(-\beta_a) + \exp(-\beta_c) + \exp(-\beta_d)}.
+$$
+
+The utilities are only identified up to an additive constant, so I set $\beta_1 = 0$ and estimate $\beta_2, \ldots, \beta_{10}$.
+
+```{r}
+#| label: choice-objects
+
+choices <- maxdiff |>
+  arrange(`Record ID`, Task, Position) |>
+  group_by(`Record ID`, Task) |>
+  summarize(
+    items = list(Item),
+    best = Item[Response == 1][1],
+    worst = Item[Response == -1][1],
+    .groups = "drop"
+  )
+
+log_sum_exp <- function(x) {
+  m <- max(x)
+  m + log(sum(exp(x - m)))
+}
+
+ll <- function(theta, choices_df = choices) {
+  beta <- c(0, theta)
+  total <- 0
+
+  for (i in seq_len(nrow(choices_df))) {
+    shown <- choices_df$items[[i]]
+    best_item <- choices_df$best[i]
+    worst_item <- choices_df$worst[i]
+
+    total <- total +
+      beta[best_item] - log_sum_exp(beta[shown])
+
+    remaining <- shown[shown != best_item]
+    total <- total +
+      (-beta[worst_item]) - log_sum_exp(-beta[remaining])
+  }
+
+  total
+}
+```
+
+## MNL via Maximum Likelihood
+
+The log-likelihood sums the best-pick and worst-pick log probabilities across tasks:
+
+$$
+\ell(\boldsymbol{\beta}) =
+\sum_{\text{tasks}}
+\left[
+\beta_{j_b^*} -
+\log \sum_{j \in \text{shown}} \exp(\beta_j) -
+\beta_{j_w^*} -
+\log \sum_{j \in \text{shown} \setminus \{j_b^*\}} \exp(-\beta_j)
+\right].
+$$
+
+```{r}
+#| label: mle-fit
+
+mle_fit <- optim(
+  par = rep(0, 9),
+  fn = ll,
+  method = "BFGS",
+  hessian = TRUE,
+  control = list(fnscale = -1, maxit = 10000)
+)
+
+beta_hat <- c(0, mle_fit$par)
+se_hat <- c(NA, sqrt(diag(solve(-mle_fit$hessian))))
+share_hat <- exp(beta_hat) / sum(exp(beta_hat))
+
+mle_results <- tibble(
+  Item = 1:10,
+  beta_hat = beta_hat,
+  se = se_hat,
+  mle_share = share_hat
+) |>
+  left_join(item_labels, by = "Item") |>
+  arrange(desc(mle_share)) |>
+  mutate(mle_rank = row_number())
+
+mle_results |>
+  select(Item, label, beta_hat, se, mle_share) |>
+  gt() |>
+  tab_header(title = "MNL Maximum Likelihood Estimates") |>
+  cols_label(
+    Item = "Item",
+    label = "Class",
+    beta_hat = "Beta",
+    se = "SE",
+    mle_share = "Share of preference"
+  ) |>
+  fmt_number(columns = c(beta_hat, se), decimals = 3) |>
+  fmt_percent(columns = mle_share, decimals = 1) |>
+  sub_missing(columns = se, missing_text = "fixed")
+```
+
+```{r}
+#| label: mle-plot
+#| fig-width: 8
+#| fig-height: 5
+
+ggplot(mle_results, aes(x = reorder(short_label, mle_share), y = mle_share, fill = short_label)) +
+  geom_col(width = 0.72) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = item_colors, guide = "none") +
+  labs(
+    title = "MNL Shares of Preference",
+    x = NULL,
+    y = "Estimated share"
+  )
+```
+
+The MLE model tells the same broad story as the counts analysis. Marketing Analytics is far ahead, with an estimated preference share of about 28%. Business Analytics and Customer Analytics are next. The middle ordering changes slightly: SQL and Capstone are very close in the MNL model even though Capstone is slightly ahead in the raw counts score. That makes sense because the MNL likelihood uses the exact sets of competing items on each screen, not only the marginal best and worst rates.
+
+## MNL via Bayesian Estimation
+
+The Bayesian model uses the same likelihood but adds a weakly informative prior:
+
+$$
+\boldsymbol{\beta} \sim N(\boldsymbol{0}, 10I).
+$$
+
+I use a random-walk Metropolis-Hastings sampler. The proposal adds normal noise to the current vector of 9 free coefficients. I tune the proposal standard deviation so the acceptance rate is in a reasonable range.
+
+```{r}
+#| label: bayes-fit
+
+log_post <- function(theta) {
+  ll(theta) + sum(dnorm(theta, mean = 0, sd = sqrt(10), log = TRUE))
+}
+
+mh <- function(beta0, n_iter, step) {
+  K <- length(beta0)
+  draws <- matrix(NA_real_, nrow = n_iter, ncol = K)
+  beta <- beta0
+  lp <- log_post(beta)
+  accept <- 0
+
+  for (t in seq_len(n_iter)) {
+    beta_star <- beta + rnorm(K, mean = 0, sd = step)
+    lp_star <- log_post(beta_star)
+
+    if (log(runif(1)) < lp_star - lp) {
+      beta <- beta_star
+      lp <- lp_star
+      accept <- accept + 1
+    }
+
+    draws[t, ] <- beta
+  }
+
+  colnames(draws) <- paste0("beta_", 2:10)
+  list(draws = draws, accept_rate = accept / n_iter)
+}
+
+set.seed(495)
+tuning_grid <- c(0.05, 0.08, 0.10)
+tuning_results <- bind_rows(lapply(tuning_grid, function(step) {
+  tuned <- mh(mle_fit$par, n_iter = 3000, step = step)
+  tibble(step = step, acceptance_rate = tuned$accept_rate)
+}))
+
+n_iter <- 20000
+burn_in <- 5000
+proposal_step <- 0.08
+bayes_fit <- mh(mle_fit$par, n_iter = n_iter, step = proposal_step)
+
+tuning_results |>
+  gt() |>
+  tab_header(title = "Metropolis-Hastings Tuning") |>
+  cols_label(step = "Proposal step", acceptance_rate = "Acceptance rate") |>
+  fmt_number(columns = step, decimals = 2) |>
+  fmt_percent(columns = acceptance_rate, decimals = 1)
+```
+
+The final sampler uses a proposal step of `r proposal_step`, which gives an acceptance rate of `r percent(bayes_fit$accept_rate, accuracy = 0.1)`.
+
+```{r}
+#| label: trace-plots
+#| fig-width: 8
+#| fig-height: 5
+
+trace_df <- as.data.frame(bayes_fit$draws)
+trace_df$iteration <- seq_len(nrow(trace_df))
+
+trace_long <- bind_rows(lapply(c("beta_5", "beta_9", "beta_6"), function(param) {
+  tibble(
+    iteration = trace_df$iteration,
+    parameter = param,
+    value = trace_df[[param]]
+  )
+}))
+
+ggplot(trace_long, aes(x = iteration, y = value)) +
+  geom_line(linewidth = 0.25, color = "#4E79A7") +
+  geom_vline(xintercept = burn_in, linetype = "dashed", color = "#E15759") +
+  facet_wrap(~ parameter, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Trace Plots for Selected Beta Parameters",
+    subtitle = "Dashed line marks the burn-in cutoff",
+    x = "Iteration",
+    y = "Beta value"
+  )
+```
+
+The traces look stable after burn-in, without a visible long-run drift. The chain moves around the same region as the maximum likelihood estimates.
+
+```{r}
+#| label: posterior-summary
+
+post_theta <- bayes_fit$draws[(burn_in + 1):n_iter, , drop = FALSE]
+post_beta <- cbind(beta_1 = 0, post_theta)
+
+softmax <- function(x) {
+  exp(x) / sum(exp(x))
+}
+
+post_shares <- t(apply(post_beta, 1, softmax))
+colnames(post_shares) <- paste0("share_", 1:10)
+
+bayes_results <- tibble(
+  Item = 1:10,
+  beta_mean = colMeans(post_beta),
+  beta_lo = apply(post_beta, 2, quantile, 0.025),
+  beta_hi = apply(post_beta, 2, quantile, 0.975),
+  bayes_share = colMeans(post_shares),
+  share_lo = apply(post_shares, 2, quantile, 0.025),
+  share_hi = apply(post_shares, 2, quantile, 0.975)
+) |>
+  left_join(item_labels, by = "Item") |>
+  arrange(desc(bayes_share)) |>
+  mutate(bayes_rank = row_number())
+
+bayes_results |>
+  select(Item, label, beta_mean, beta_lo, beta_hi, bayes_share, share_lo, share_hi) |>
+  gt() |>
+  tab_header(title = "Bayesian MNL Posterior Summary") |>
+  cols_label(
+    Item = "Item",
+    label = "Class",
+    beta_mean = "Mean beta",
+    beta_lo = "Beta 2.5%",
+    beta_hi = "Beta 97.5%",
+    bayes_share = "Mean share",
+    share_lo = "Share 2.5%",
+    share_hi = "Share 97.5%"
+  ) |>
+  fmt_number(columns = c(beta_mean, beta_lo, beta_hi), decimals = 3) |>
+  fmt_percent(columns = c(bayes_share, share_lo, share_hi), decimals = 1)
+```
+
+```{r}
+#| label: bayes-share-plot
+#| fig-width: 8
+#| fig-height: 5
+
+ggplot(bayes_results, aes(x = reorder(short_label, bayes_share), y = bayes_share, fill = short_label)) +
+  geom_col(width = 0.72) +
+  geom_errorbar(aes(ymin = share_lo, ymax = share_hi), width = 0.2, color = "#333333") +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = item_colors, guide = "none") +
+  labs(
+    title = "Bayesian MNL Shares of Preference",
+    subtitle = "Bars show posterior mean shares; lines show 95% credible intervals",
+    x = NULL,
+    y = "Posterior mean share"
+  )
+```
+
+The posterior means are very close to the MLE point estimates, which is expected because the sample size is not tiny and the prior is weak. The Bayesian results add a convenient uncertainty interval for each share. Marketing Analytics remains clearly separated from the rest. In the middle, the intervals overlap substantially, so I would not over-interpret small ordering differences between SQL, Capstone, Large Data, and Customer Analytics.
+
+## Comparing the Three Methods
+
+```{r}
+#| label: comparison-table
+
+comparison <- counts |>
+  select(Item, label, short_label, counts_score = score, counts_rank) |>
+  left_join(
+    mle_results |> select(Item, mle_share, mle_rank),
+    by = "Item"
+  ) |>
+  left_join(
+    bayes_results |> select(Item, bayes_share, bayes_rank),
+    by = "Item"
+  ) |>
+  arrange(mle_rank)
+
+comparison |>
+  select(
+    Item,
+    label,
+    counts_score,
+    counts_rank,
+    mle_share,
+    mle_rank,
+    bayes_share,
+    bayes_rank
+  ) |>
+  gt() |>
+  tab_header(title = "Side-by-Side Comparison of Preference Estimates") |>
+  cols_label(
+    Item = "Item",
+    label = "Class",
+    counts_score = "Counts score",
+    counts_rank = "Counts rank",
+    mle_share = "MLE share",
+    mle_rank = "MLE rank",
+    bayes_share = "Bayes share",
+    bayes_rank = "Bayes rank"
+  ) |>
+  fmt_number(columns = counts_score, decimals = 3) |>
+  fmt_percent(columns = c(mle_share, bayes_share), decimals = 1) |>
+  fmt_number(columns = c(counts_rank, mle_rank, bayes_rank), decimals = 0)
+```
+
+```{r}
+#| label: comparison-plot
+#| fig-width: 12
+#| fig-height: 5
+
+count_plot <- counts |>
+  ggplot(aes(x = reorder(short_label, score), y = score, fill = short_label)) +
+  geom_col(width = 0.72) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = item_colors, guide = "none") +
+  labs(title = "Counts", x = NULL, y = "Best-worst score")
+
+mle_plot <- mle_results |>
+  ggplot(aes(x = reorder(short_label, mle_share), y = mle_share, fill = short_label)) +
+  geom_col(width = 0.72) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = item_colors, guide = "none") +
+  labs(title = "MLE MNL", x = NULL, y = "Share")
+
+bayes_plot <- bayes_results |>
+  ggplot(aes(x = reorder(short_label, bayes_share), y = bayes_share, fill = short_label)) +
+  geom_col(width = 0.72) +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = item_colors, guide = "none") +
+  labs(title = "Bayesian MNL", x = NULL, y = "Share")
+
+count_plot + mle_plot + bayes_plot
+```
+
+All three methods produce the same point-estimate ranking in this sample. Marketing Analytics is the strongest preference by a wide margin, while Analytics Consulting, Marketing/Finance/Operations, and AI Math/Programming/Analytics are near the bottom. The place where I would still be cautious is the middle of the ranking: SQL, Capstone, Large Data, and Customer Analytics are closer together than the top-versus-bottom contrast, so small changes in the sample or model could plausibly reorder some of them.
+
+The MNL model adds value because it models the actual choice process. It uses the full set of alternatives shown on each task, so every item shown contributes information even when it was not selected. The Bayesian version adds value because uncertainty for derived quantities, such as shares of preference, is easy to compute: I transform every posterior draw into shares and then summarize those transformed draws.
+
+## Discussion
+
+Substantively, this survey suggests that MSBA students are especially enthusiastic about Marketing Analytics. Business Analytics, Customer Analytics, and Large Data also perform well, while Analytics Consulting and the broad Marketing/Finance/Operations summer class are less preferred in this sample. I would be careful not to treat the middle ranks as precise, because many of those classes have overlapping uncertainty intervals.
+
+Methodologically, I would use the counts analysis for a quick descriptive dashboard. It is transparent and easy to explain. I would use the MLE MNL model when I need a formal model with point estimates and standard errors. I would use the Bayesian MNL model when I care about uncertainty in shares, simulations, or future model extensions such as individual-level preference heterogeneity.
+
+The main caveat is that this was a self-selected survey sample of MSBA students, so the results may not generalize to every student or future cohort. Preferences could also be affected by current standing in the program, prior coursework, professor familiarity, or the order in which items appeared. With more time, I would extend this model hierarchically so that it estimates both the average ranking and how much individual students differ from that average.
