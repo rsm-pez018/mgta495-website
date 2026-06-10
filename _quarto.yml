@@ -16,6 +16,8 @@ website:
         text: HW3
       - href: hw4_questions.qmd
         text: HW4
+      - href: hw5_questions.qmd
+        text: HW5
       - href: Peirong_Zhang-quarto_website_customization.qmd
         text: Presentation
       - about.qmd

@@ -1,0 +1,425 @@
+---
+title: "Key Drivers Analysis"
+subtitle: "Comparing correlation, linear-model, Shapley, Johnson, and random-forest driver measures"
+author: "Peirong"
+date: today
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gt)
+library(ranger)
+library(scales)
+
+theme_set(theme_minimal(base_size = 12))
+
+driver_vars <- c(
+  "trust", "build", "differs", "easy", "appealing",
+  "rewarding", "popular", "service", "impact"
+)
+
+driver_names <- c(
+  trust = "Trust",
+  build = "Build",
+  differs = "Differs",
+  easy = "Easy",
+  appealing = "Appealing",
+  rewarding = "Rewarding",
+  popular = "Popular",
+  service = "Service",
+  impact = "Impact"
+)
+
+driver_palette <- c(
+  "Trust" = "#2F6B8F",
+  "Build" = "#6A8F3A",
+  "Differs" = "#B44E3A",
+  "Easy" = "#6E5BA6",
+  "Appealing" = "#C27B2C",
+  "Rewarding" = "#408A78",
+  "Popular" = "#8B5E3C",
+  "Service" = "#4E6FAE",
+  "Impact" = "#A0456E"
+)
+
+rank_desc <- function(x) rank(-x, ties.method = "min")
+
+data_path <- dplyr::case_when(
+  file.exists("data/data_for_drivers_analysis.csv") ~ "data/data_for_drivers_analysis.csv",
+  file.exists("data_for_drivers_analysis.csv") ~ "data_for_drivers_analysis.csv",
+  TRUE ~ NA_character_
+)
+
+if (is.na(data_path)) {
+  stop("Could not find data_for_drivers_analysis.csv")
+}
+```
+
+## Overview
+
+This analysis uses customer satisfaction survey data to estimate which brand attributes are most strongly associated with overall satisfaction. I omit the polychoric correlations, as allowed in the assignment, and focus on these six measures:
+
+- Pearson correlation with satisfaction.
+- Standardized coefficient from a multiple linear regression.
+- Drop-one usefulness, measured as the full model R-squared minus the R-squared after removing one driver.
+- Exact Shapley values from a linear regression using R-squared as the fit metric.
+- Johnson's relative weights, which decompose the same full-model R-squared.
+- Random forest mean decrease in Gini impurity.
+
+The variables `brand` and `id` are identifiers rather than perceptual drivers, so I leave them out of the driver models.
+
+## Data
+
+```{r}
+#| label: read-data
+
+survey <- read_csv(data_path, show_col_types = FALSE)
+
+analysis_data <- survey |>
+  select(satisfaction, all_of(driver_vars))
+
+data_summary <- tibble(
+  responses = nrow(survey),
+  brands = n_distinct(survey$brand),
+  respondents = n_distinct(survey$id),
+  satisfaction_min = min(survey$satisfaction),
+  satisfaction_max = max(survey$satisfaction),
+  missing_values = sum(is.na(survey))
+)
+
+data_summary |>
+  gt() |>
+  tab_header(title = "Survey Data Summary") |>
+  cols_label(
+    responses = "Rows",
+    brands = "Brands",
+    respondents = "Unique IDs",
+    satisfaction_min = "Min satisfaction",
+    satisfaction_max = "Max satisfaction",
+    missing_values = "Missing values"
+  ) |>
+  fmt_number(columns = everything(), decimals = 0)
+```
+
+The data contain `r nrow(survey)` brand evaluations and no missing values. Satisfaction is measured on a 1 to 5 scale, while each driver is coded as a binary indicator.
+
+```{r}
+#| label: driver-rates
+
+driver_rates <- survey |>
+  summarize(across(all_of(driver_vars), mean)) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "share_selected") |>
+  mutate(driver = unname(driver_names[variable])) |>
+  arrange(desc(share_selected))
+
+driver_rates |>
+  select(driver, share_selected) |>
+  gt() |>
+  tab_header(title = "Share of Records Where Each Driver Is Present") |>
+  cols_label(driver = "Driver", share_selected = "Share present") |>
+  fmt_percent(columns = share_selected, decimals = 1)
+```
+
+## Methods
+
+```{r}
+#| label: helper-functions
+
+model_r2 <- function(data, predictors) {
+  if (length(predictors) == 0) {
+    return(0)
+  }
+
+  fit <- lm(reformulate(predictors, response = "satisfaction"), data = data)
+  summary(fit)$r.squared
+}
+
+shapley_r2 <- function(data, predictors) {
+  p <- length(predictors)
+  n_masks <- bitwShiftL(1L, p)
+  r2_cache <- numeric(n_masks)
+
+  popcount <- function(mask) {
+    sum(as.integer(intToBits(mask))[seq_len(p)])
+  }
+
+  for (mask in 0:(n_masks - 1L)) {
+    bits <- as.logical(sapply(
+      0:(p - 1L),
+      function(j) bitwAnd(mask, bitwShiftL(1L, j)) != 0L
+    ))
+    r2_cache[mask + 1L] <- model_r2(data, predictors[bits])
+  }
+
+  values <- setNames(numeric(p), predictors)
+
+  for (j in seq_len(p)) {
+    bit <- bitwShiftL(1L, j - 1L)
+
+    for (mask in 0:(n_masks - 1L)) {
+      if (bitwAnd(mask, bit) == 0L) {
+        subset_size <- popcount(mask)
+        weight <- factorial(subset_size) *
+          factorial(p - subset_size - 1L) /
+          factorial(p)
+
+        values[j] <- values[j] +
+          weight * (r2_cache[mask + bit + 1L] - r2_cache[mask + 1L])
+      }
+    }
+  }
+
+  values
+}
+
+johnson_relative_weights <- function(data, outcome, predictors) {
+  x <- scale(data[, predictors])
+  y <- as.numeric(scale(data[[outcome]]))
+
+  predictor_cor <- cor(x)
+  outcome_cor <- as.numeric(cor(x, y))
+  eig <- eigen(predictor_cor)
+
+  lambda <- eig$vectors %*%
+    diag(sqrt(pmax(eig$values, 0))) %*%
+    t(eig$vectors)
+
+  beta_orthogonal <- solve(lambda, outcome_cor)
+  weights <- as.vector((lambda^2) %*% (beta_orthogonal^2))
+
+  setNames(weights, predictors)
+}
+```
+
+For the linear methods, I fit satisfaction as a continuous outcome. For the random forest, I treat satisfaction as a five-class outcome and use impurity importance from `ranger`, which corresponds to mean decrease in Gini impurity for classification trees.
+
+```{r}
+#| label: calculate-driver-metrics
+
+pearson_cor <- sapply(driver_vars, function(v) {
+  cor(survey[[v]], survey$satisfaction)
+})
+
+standardized_data <- as.data.frame(scale(analysis_data))
+standardized_fit <- lm(satisfaction ~ ., data = standardized_data)
+standardized_beta <- coef(standardized_fit)[driver_vars]
+
+full_model <- lm(reformulate(driver_vars, response = "satisfaction"), data = survey)
+full_r2 <- summary(full_model)$r.squared
+
+drop_one <- sapply(driver_vars, function(v) {
+  reduced_r2 <- model_r2(survey, setdiff(driver_vars, v))
+  full_r2 - reduced_r2
+})
+
+shapley_values <- shapley_r2(survey, driver_vars)
+johnson_weights <- johnson_relative_weights(survey, "satisfaction", driver_vars)
+
+rf_data <- survey |>
+  select(satisfaction, all_of(driver_vars)) |>
+  mutate(satisfaction = factor(satisfaction))
+
+rf_fit <- ranger(
+  satisfaction ~ .,
+  data = rf_data,
+  num.trees = 1000,
+  importance = "impurity",
+  seed = 495
+)
+
+rf_gini <- ranger::importance(rf_fit)[driver_vars]
+
+driver_results <- tibble(
+  variable = driver_vars,
+  driver = unname(driver_names[driver_vars]),
+  pearson = as.numeric(pearson_cor[driver_vars]),
+  standardized_beta = as.numeric(standardized_beta[driver_vars]),
+  drop_one = as.numeric(drop_one[driver_vars]),
+  shapley = as.numeric(shapley_values[driver_vars]),
+  johnson = as.numeric(johnson_weights[driver_vars]),
+  rf_gini = as.numeric(rf_gini[driver_vars])
+) |>
+  mutate(
+    pearson_rank = rank_desc(abs(pearson)),
+    beta_rank = rank_desc(abs(standardized_beta)),
+    drop_one_rank = rank_desc(drop_one),
+    shapley_rank = rank_desc(shapley),
+    johnson_rank = rank_desc(johnson),
+    rf_rank = rank_desc(rf_gini),
+    shapley_share = shapley / full_r2,
+    johnson_share = johnson / full_r2,
+    rf_share = rf_gini / sum(rf_gini)
+  ) |>
+  arrange(shapley_rank, driver)
+```
+
+The full linear model has an R-squared of `r number(full_r2, accuracy = 0.001)`. The exact Shapley values sum to `r number(sum(driver_results$shapley), accuracy = 0.001)`, and Johnson's relative weights sum to `r number(sum(driver_results$johnson), accuracy = 0.001)`, so both methods decompose the same full-model fit.
+
+## Key Driver Table
+
+```{r}
+#| label: key-driver-table
+
+driver_results |>
+  select(
+    driver,
+    pearson,
+    standardized_beta,
+    drop_one,
+    shapley,
+    johnson,
+    rf_gini,
+    shapley_share,
+    johnson_share,
+    rf_share
+  ) |>
+  gt() |>
+  tab_header(
+    title = "Key Driver Results",
+    subtitle = "Rows are sorted by Shapley value from the linear R-squared decomposition"
+  ) |>
+  tab_spanner(
+    label = "Linear Association",
+    columns = c(pearson, standardized_beta)
+  ) |>
+  tab_spanner(
+    label = "R-squared Decomposition",
+    columns = c(drop_one, shapley, johnson, shapley_share, johnson_share)
+  ) |>
+  tab_spanner(
+    label = "Random Forest",
+    columns = c(rf_gini, rf_share)
+  ) |>
+  cols_label(
+    driver = "Driver",
+    pearson = "Pearson r",
+    standardized_beta = "Std. beta",
+    drop_one = "Drop-one",
+    shapley = "Shapley",
+    johnson = "Johnson",
+    rf_gini = "Gini decrease",
+    shapley_share = "Shapley share",
+    johnson_share = "Johnson share",
+    rf_share = "Gini share"
+  ) |>
+  fmt_number(
+    columns = c(pearson, standardized_beta),
+    decimals = 3
+  ) |>
+  fmt_number(
+    columns = c(drop_one, shapley, johnson, rf_gini),
+    decimals = 4
+  ) |>
+  fmt_percent(
+    columns = c(shapley_share, johnson_share, rf_share),
+    decimals = 1
+  ) |>
+  data_color(
+    columns = c(shapley_share, johnson_share, rf_share),
+    palette = c("#F7FBFF", "#2F6B8F")
+  )
+```
+
+The strongest drivers by the linear R-squared decompositions are **Impact**, **Trust**, and **Service**. These three drivers also have the highest Pearson correlations with satisfaction, which makes them the clearest top tier.
+
+Some variables, especially **Easy**, **Appealing**, **Build**, and **Rewarding**, have positive simple correlations but much smaller standardized coefficients and drop-one values. That pattern suggests overlap among the drivers: they move with satisfaction, but they do not add as much unique explanatory power once the other attributes are already in the model.
+
+## Rank Comparison
+
+```{r}
+#| label: rank-table
+
+driver_results |>
+  select(
+    driver,
+    pearson_rank,
+    beta_rank,
+    drop_one_rank,
+    shapley_rank,
+    johnson_rank,
+    rf_rank
+  ) |>
+  gt() |>
+  tab_header(title = "Driver Ranks by Method") |>
+  cols_label(
+    driver = "Driver",
+    pearson_rank = "Pearson",
+    beta_rank = "Std. beta",
+    drop_one_rank = "Drop-one",
+    shapley_rank = "Shapley",
+    johnson_rank = "Johnson",
+    rf_rank = "RF Gini"
+  ) |>
+  fmt_number(columns = -driver, decimals = 0) |>
+  data_color(
+    columns = -driver,
+    palette = c("#2F6B8F", "#F7FBFF"),
+    domain = c(1, length(driver_vars))
+  )
+```
+
+```{r}
+#| label: importance-share-plot
+#| fig-width: 9
+#| fig-height: 5.5
+
+importance_plot <- driver_results |>
+  select(driver, drop_one, shapley, johnson, rf_gini) |>
+  pivot_longer(
+    cols = -driver,
+    names_to = "method",
+    values_to = "value"
+  ) |>
+  group_by(method) |>
+  mutate(share = value / sum(value)) |>
+  ungroup() |>
+  mutate(
+    method = recode(
+      method,
+      drop_one = "Drop-one",
+      shapley = "Shapley",
+      johnson = "Johnson",
+      rf_gini = "RF Gini"
+    ),
+    method = factor(method, levels = c("Drop-one", "Shapley", "Johnson", "RF Gini")),
+    driver = factor(driver, levels = rev(driver_results$driver))
+  )
+
+ggplot(importance_plot, aes(x = share, y = driver, fill = driver)) +
+  geom_col(width = 0.72, show.legend = FALSE) +
+  facet_wrap(~method, nrow = 1) +
+  scale_x_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = driver_palette) +
+  labs(
+    x = "Share within method",
+    y = NULL,
+    title = "Relative Importance by Method"
+  ) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(face = "bold")
+  )
+```
+
+The random forest Gini importance is noticeably flatter than the linear decompositions. This is not surprising here because all nine predictors are binary and the outcome has only five satisfaction classes. The linear methods give a sharper story: **Impact** and **Trust** are the first priorities, with **Service** as a close third.
+
+## Conclusion
+
+Across the methods, I would prioritize **Impact**, **Trust**, and **Service** as the main satisfaction drivers. **Appealing** and **Easy** still matter directionally, but their lower unique contribution means they are more likely to be secondary or overlapping signals rather than the strongest independent levers.
+
+The practical recommendation is to focus first on improving perceptions that the brand has meaningful impact, is trustworthy, and provides good service. These attributes are most consistently connected with higher satisfaction in both the simple association measures and the linear importance decompositions.
